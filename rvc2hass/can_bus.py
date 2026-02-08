@@ -52,6 +52,7 @@ class CANBusReader:
         """Read CAN frames continuously, calling callback for each.
 
         Runs until stop() is called. Automatically reconnects on errors.
+        Uses a background thread for blocking reads to keep CPU usage low.
 
         Args:
             callback: Called with each CAN message received.
@@ -62,13 +63,10 @@ class CANBusReader:
             try:
                 if self._bus is None:
                     self.connect()
-                # Use a reader in a thread to avoid blocking the event loop
                 loop = asyncio.get_event_loop()
-                msg = await loop.run_in_executor(
-                    None, lambda: self._bus.recv(timeout=1.0)
+                await loop.run_in_executor(
+                    None, self._read_loop, callback
                 )
-                if msg is not None:
-                    callback(msg)
             except can.CanError as e:
                 log.error("CAN bus error: %s — reconnecting in %ss", e, reconnect_delay)
                 self.disconnect()
@@ -78,6 +76,17 @@ class CANBusReader:
                     log.error("Unexpected CAN error: %s — reconnecting in %ss", e, reconnect_delay)
                     self.disconnect()
                     await asyncio.sleep(reconnect_delay)
+
+    def _read_loop(self, callback: Callable[[can.Message], None]):
+        """Blocking read loop that runs in a thread executor.
+
+        Reads frames continuously until stopped, calling the callback
+        for each frame. This avoids per-frame executor overhead.
+        """
+        while self._running:
+            msg = self._bus.recv(timeout=1.0)
+            if msg is not None:
+                callback(msg)
 
     def stop(self):
         """Signal the reader to stop."""
