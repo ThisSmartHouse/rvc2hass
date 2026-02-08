@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import threading
 from pathlib import Path
 
 import can
@@ -19,7 +20,7 @@ import can
 from .can_bus import CANBusReader
 from .config import Profile
 from .entity_manager import EntityManager
-from .entities.light import build_brightness_command, build_off_command, build_on_command
+from .entities.light import build_brightness_ramp, build_brightness_stop, build_off_command, build_on_command
 from .entities.switch import build_switch_on, build_switch_off
 from .entities.cover import build_cover_open, build_cover_close, build_cover_stop
 from .mqtt_client import STATE_PREFIX, MQTTManager, slugify
@@ -119,12 +120,19 @@ def _setup_commands(profile, mqtt, can_reader):
                 def handler(topic, payload):
                     try:
                         brightness = int(float(payload))
-                        send_frames(build_brightness_command(lt.instance, brightness))
+                        # Send ramp command, then after 5s send stop+lock
+                        # (Firefly needs time to ramp to target brightness)
+                        arb_id, data = build_brightness_ramp(lt.instance, brightness)
+                        can_reader.send(arb_id, data)
                         mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/brightness/state", str(brightness))
                         if brightness > 0:
                             mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/state", "ON")
-                    except (ValueError, TypeError):
-                        log.warning("Invalid brightness value: %s", payload)
+                        def send_stop():
+                            for arb_id, data in build_brightness_stop(lt.instance):
+                                can_reader.send(arb_id, data)
+                        threading.Timer(5.0, send_stop).start()
+                    except Exception:
+                        log.exception("Error handling brightness command: %s", payload)
                 return handler
             mqtt.subscribe_command(
                 f"{STATE_PREFIX}/light/{inst}/brightness/set",

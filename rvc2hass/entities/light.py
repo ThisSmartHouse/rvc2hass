@@ -67,27 +67,29 @@ def build_off_command(instance: int, payload_off: int = 3) -> list[tuple[int, by
     return [build_dimmer_command(instance, payload_off, brightness=0)]
 
 
-def build_brightness_command(instance: int, brightness: int) -> list[tuple[int, bytes]]:
-    """Build CAN frames to set dimmer brightness.
+def build_brightness_ramp(instance: int, brightness: int) -> tuple[int, bytes]:
+    """Build the initial ramp command for setting dimmer brightness.
 
-    Uses the ramp brightness command (17) followed by stop (21) and
-    lock (4), matching dc_dimmer.pl behavior.
+    Returns a single CAN frame. After sending, the caller must wait ~5 seconds
+    for the Firefly to ramp to the target, then send the stop+lock frames
+    from build_brightness_stop().
 
     Args:
         instance: Dimmer instance number.
         brightness: Target brightness 0-100.
-
-    Returns:
-        List of (arbitration_id, data_bytes) tuples to send in sequence.
     """
-    frames = []
-    # Initial ramp command
-    frames.append(build_dimmer_command(instance, 17, brightness))
-    # Follow-up stop command
-    frames.append(build_dimmer_command(instance, 21, brightness=0, duration=0))
-    # Lock command to hold the brightness
-    frames.append(build_dimmer_command(instance, 4, brightness=0, duration=0))
-    return frames
+    return build_dimmer_command(instance, 17, brightness)
+
+
+def build_brightness_stop(instance: int) -> list[tuple[int, bytes]]:
+    """Build stop + lock frames to finalize a brightness ramp.
+
+    Send these ~5 seconds after the ramp command to lock in the brightness.
+    """
+    return [
+        build_dimmer_command(instance, 21, brightness=0, duration=0),
+        build_dimmer_command(instance, 4, brightness=0, duration=0),
+    ]
 
 
 def build_cover_command(instance: int, activate: bool = True) -> list[tuple[int, bytes]]:

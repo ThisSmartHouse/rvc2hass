@@ -8,7 +8,8 @@ import pytest
 
 from rvc2hass.entities.light import (
     DC_DIMMER_COMMAND_2_ARB_ID,
-    build_brightness_command,
+    build_brightness_ramp,
+    build_brightness_stop,
     build_dimmer_command,
     build_off_command,
     build_on_command,
@@ -91,30 +92,33 @@ class TestDimmerOff:
 
 
 class TestDimmerBrightness:
-    """Ramp brightness command (17) with follow-up stop (21) and lock (4)."""
+    """Ramp brightness command (17) with follow-up stop (21) and lock (4).
 
-    def test_three_frames(self):
-        frames = build_brightness_command(18, 75)
-        assert len(frames) == 3
+    The ramp and stop/lock are now split into separate functions because
+    the Firefly needs ~5 seconds between them to reach target brightness.
+    """
 
-    def test_initial_ramp(self):
-        frames = build_brightness_command(18, 75)
-        _, data = frames[0]
+    def test_ramp_frame(self):
+        arb_id, data = build_brightness_ramp(18, 75)
         assert data[0] == 18       # instance
         assert data[2] == 150      # 75 * 2
         assert data[3] == 17       # command: ramp brightness
 
+    def test_stop_returns_two_frames(self):
+        frames = build_brightness_stop(18)
+        assert len(frames) == 2
+
     def test_stop_command(self):
-        frames = build_brightness_command(18, 75)
-        _, data = frames[1]
+        frames = build_brightness_stop(18)
+        _, data = frames[0]
         assert data[0] == 18
         assert data[2] == 0        # brightness 0
         assert data[3] == 21       # command: ramp up/down (stop)
         assert data[4] == 0        # duration 0
 
     def test_lock_command(self):
-        frames = build_brightness_command(18, 75)
-        _, data = frames[2]
+        frames = build_brightness_stop(18)
+        _, data = frames[1]
         assert data[0] == 18
         assert data[3] == 4        # command: stop (lock)
 
