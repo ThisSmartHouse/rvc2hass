@@ -1,0 +1,307 @@
+# Thor Hurricane 35M RV-C Profile
+# Maps CAN bus DGN instances to Home Assistant entities for this specific coach.
+# Ported from rv-homeassistant/files/homeassistant/packages/rvc_mqtt/
+
+profile:
+  name: "Thor Hurricane 35M"
+  manufacturer: "Thor Motor Coach"
+  model: "Hurricane 35M"
+  year: 2020
+  multiplex: "Firefly"
+
+mqtt:
+  broker: "10.11.12.2"
+  port: 1883
+
+can:
+  interface: "socketcan"
+  channel: "can0"
+  bitrate: 250000
+
+# DC Dimmer instances → light entities
+# Source DGN: DC_DIMMER_STATUS_3 (1FEDA)
+# Command DGN: DC_DIMMER_COMMAND_2 (1FEDB)
+lights:
+  # Dimmable lights (support brightness 0-100%)
+  - instance: 17
+    name: "Living Room"
+    dimmable: true
+  - instance: 18
+    name: "Bedroom"
+    dimmable: true
+  - instance: 19
+    name: "Front Bathroom"
+    dimmable: true
+  - instance: 20
+    name: "Rear Bathroom"
+    dimmable: true
+  # Non-dimmable lights (on/off only)
+  - instance: 15
+    name: "Vanity"
+    dimmable: false
+  - instance: 26
+    name: "Cargo"
+    dimmable: false
+  - instance: 27
+    name: "Stairwell"
+    dimmable: false
+  - instance: 28
+    name: "Awning"
+    dimmable: false
+
+# DC Dimmer instances → switch entities
+# These use DC_DIMMER_COMMAND_2 for control but aren't lights.
+# payload_on/off values match what mqtt-launcher.py sends.
+switches:
+  - instance: 1
+    name: "Front A/C Compressor"
+    payload_on: 2
+    payload_off: 3
+  - instance: 2
+    name: "Front A/C Fan High"
+    payload_on: 2
+    payload_off: 3
+  - instance: 3
+    name: "Front A/C Fan Low"
+    payload_on: 2
+    payload_off: 3
+  - instance: 5
+    name: "Rear A/C Compressor"
+    payload_on: 2
+    payload_off: 3
+  - instance: 6
+    name: "Rear A/C Fan High"
+    payload_on: 2
+    payload_off: 3
+  - instance: 7
+    name: "Rear A/C Fan Low"
+    payload_on: 2
+    payload_off: 3
+  - instance: 16
+    name: "Front Bathroom Fan"
+    payload_on: 2
+    payload_off: 3
+  - instance: 29
+    name: "Furnace"
+    payload_on: 2
+    payload_off: 3
+  - instance: 30
+    name: "Gas Water Heater"
+    payload_on: 2
+    payload_off: 3
+  - instance: 31
+    name: "Electric Water Heater"
+    payload_on: 2
+    payload_off: 3
+  - instance: 32
+    name: "Rear Bathroom Fan"
+    payload_on: 2
+    payload_off: 3
+  - instance: 34
+    name: "Start Generator"
+    payload_on: 1
+    payload_off: 3
+  - instance: 35
+    name: "Stop Generator"
+    payload_on: 1
+    payload_off: 3
+
+# Cover entities use two DC Dimmer instances each (extend + retract)
+covers:
+  - name: "Awning"
+    extend_instance: 24
+    retract_instance: 25
+  - name: "Front Slide"
+    extend_instance: 10
+    retract_instance: 11
+  - name: "Rear Slide"
+    extend_instance: 12
+    retract_instance: 13
+
+# Sensor entities from various DGNs
+sensors:
+  # Battery voltages from DC_SOURCE_STATUS_1 (1FFFD)
+  - dgn: DC_SOURCE_STATUS_1
+    instance: 1
+    name: "House Battery Voltage"
+    field: "dc voltage"
+    unit: "V"
+    device_class: voltage
+  - dgn: DC_SOURCE_STATUS_1
+    instance: 2
+    name: "Engine Battery Voltage"
+    field: "dc voltage"
+    unit: "V"
+    device_class: voltage
+
+  # Engine Battery SoC (computed from voltage using lead-acid lookup table)
+  - dgn: DC_SOURCE_STATUS_1
+    instance: 2
+    name: "Engine Battery SoC"
+    field: "dc voltage"
+    unit: "%"
+    device_class: battery
+    value_template: "voltage_to_soc"
+
+  # Temperatures from THERMOSTAT_AMBIENT_STATUS (1FF9C)
+  - dgn: THERMOSTAT_AMBIENT_STATUS
+    instance: 1
+    name: "Temperature Front"
+    field: "ambient temp"
+    unit: "°C"
+    device_class: temperature
+  - dgn: THERMOSTAT_AMBIENT_STATUS
+    instance: 2
+    name: "Temperature Rear"
+    field: "ambient temp"
+    unit: "°C"
+    device_class: temperature
+
+  # Tank levels from TANK_STATUS (1FFB7)
+  - dgn: TANK_STATUS
+    instance: 0
+    name: "Freshwater Tank"
+    unit: "%"
+    value_template: "relative_level / resolution * 100"
+  - dgn: TANK_STATUS
+    instance: 1
+    name: "Rear Black Tank"
+    unit: "%"
+    value_template: "relative_level / resolution * 100"
+  - dgn: TANK_STATUS
+    instance: 2
+    name: "Rear Gray Tank"
+    unit: "%"
+    value_template: "relative_level / resolution * 100"
+  - dgn: TANK_STATUS
+    instance: 3
+    name: "Propane"
+    unit: "%"
+    value_template: "relative_level / resolution * 100"
+  - dgn: TANK_STATUS
+    instance: 17
+    name: "Front Black Tank"
+    unit: "%"
+    value_template: "relative_level / resolution * 100"
+  - dgn: TANK_STATUS
+    instance: 18
+    name: "Front Gray Tank"
+    unit: "%"
+    value_template: "relative_level / resolution * 100"
+
+  # Generator from GENERATOR_STATUS_1 (1FFDC)
+  - dgn: GENERATOR_STATUS_1
+    name: "Generator Status"
+    field: "status"
+    value_map:
+      0: stopped
+      1: preheat
+      2: cranking
+      3: running
+      4: priming
+      5: fault
+      6: engine-run-only
+      7: test-mode
+      8: voltage-adj-mode
+      9: fault-bypass-mode
+      10: config-mode
+  - dgn: GENERATOR_STATUS_1
+    name: "Generator Runtime"
+    field: "engine run time"
+    unit: "h"
+    value_template: "value / 60"
+  - dgn: GENERATOR_STATUS_1
+    name: "Generator Load"
+    field: "engine load"
+    unit: "%"
+
+  # Thermostat status from THERMOSTAT_STATUS_1 (1FFE2)
+  - dgn: THERMOSTAT_STATUS_1
+    instance: 1
+    name: "Front Climate Fan Status"
+    field: "fan mode definition"
+  - dgn: THERMOSTAT_STATUS_1
+    instance: 1
+    name: "Front Climate Fan Speed"
+    field: "fan speed"
+    unit: "%"
+  - dgn: THERMOSTAT_STATUS_1
+    instance: 1
+    name: "Front Thermostat Mode"
+    field: "operating mode"
+    value_map:
+      "0000": "off"
+      "0001": "cool"
+      "0010": "heat"
+      "0011": "auto_heat_cool"
+      "0100": "fan_only"
+      "0101": "aux_heat"
+      "0110": "window_defrost"
+  - dgn: THERMOSTAT_STATUS_1
+    instance: 2
+    name: "Rear Climate Fan Status"
+    field: "fan mode definition"
+  - dgn: THERMOSTAT_STATUS_1
+    instance: 2
+    name: "Rear Climate Fan Speed"
+    field: "fan speed"
+    unit: "%"
+  - dgn: THERMOSTAT_STATUS_1
+    instance: 2
+    name: "Rear Thermostat Mode"
+    field: "operating mode"
+    value_map:
+      "0000": "off"
+      "0001": "cool"
+      "0010": "heat"
+      "0011": "auto_heat_cool"
+      "0100": "fan_only"
+      "0101": "aux_heat"
+      "0110": "window_defrost"
+
+# Binary sensor entities
+binary_sensors:
+  - dgn: GENERATOR_STATUS_1
+    name: "Generator Running"
+    field: "status"
+    on_value: 3
+  - dgn: DC_DIMMER_STATUS_3
+    instance: 24
+    name: "Awning Extend Locked"
+    field: "lock status"
+    on_value: "01"
+  - dgn: DC_DIMMER_STATUS_3
+    instance: 25
+    name: "Awning Retract Locked"
+    field: "lock status"
+    on_value: "01"
+  - dgn: DC_DIMMER_STATUS_3
+    instance: 10
+    name: "Slide 1 Extend Locked"
+    field: "lock status"
+    on_value: "01"
+  - dgn: DC_DIMMER_STATUS_3
+    instance: 11
+    name: "Slide 1 Retract Locked"
+    field: "lock status"
+    on_value: "01"
+  - dgn: DC_DIMMER_STATUS_3
+    instance: 12
+    name: "Slide 2 Extend Locked"
+    field: "lock status"
+    on_value: "01"
+  - dgn: DC_DIMMER_STATUS_3
+    instance: 13
+    name: "Slide 2 Retract Locked"
+    field: "lock status"
+    on_value: "01"
+  - dgn: DC_DIMMER_STATUS_3
+    instance: 4
+    name: "Bunk Extend Locked"
+    field: "lock status"
+    on_value: "01"
+  - dgn: DC_DIMMER_STATUS_3
+    instance: 8
+    name: "Bunk Retract Locked"
+    field: "lock status"
+    on_value: "01"

@@ -1,0 +1,17 @@
+[Unit]
+Description=RV-C CAN Bus to Home Assistant via MQTT
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/opt/rvc2hass/.venv/bin/python -m rvc2hass --profile /opt/rvc2hass/profiles/thor_hurricane_35m.yaml
+WorkingDirectory=/opt/rvc2hass
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
