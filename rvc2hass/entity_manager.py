@@ -116,11 +116,11 @@ class EntityManager:
         slug = slugify(sensor.name)
         instance_suffix = f"_{sensor.instance}" if sensor.instance is not None else ""
 
-        if sensor.field:
-            value = decoded.get(sensor.field)
-        elif sensor.value_template:
-            # For template sensors like tanks, compute from decoded fields
+        if sensor.value_template:
+            # Template sensors: tanks, runtime conversion, voltage-to-SoC, etc.
             value = self._eval_sensor_template(sensor, decoded)
+        elif sensor.field:
+            value = decoded.get(sensor.field)
         else:
             value = None
 

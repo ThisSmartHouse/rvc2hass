@@ -10,7 +10,7 @@ profile:
   multiplex: "Firefly"
 
 mqtt:
-  broker: "10.11.12.2"
+  broker: "10.11.12.11"
   port: 1883
 
 can:
