@@ -4,6 +4,8 @@ Provides async read/write access to a CAN bus interface (real or virtual).
 Handles connection, reconnection, and graceful shutdown.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from typing import Callable

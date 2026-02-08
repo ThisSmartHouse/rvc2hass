@@ -7,6 +7,8 @@ Listens to the CAN bus for a specified duration and reports:
 - Instances seen on the bus but not in the profile
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from collections import defaultdict

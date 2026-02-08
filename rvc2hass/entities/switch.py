@@ -4,6 +4,8 @@ Switches use the same DC_DIMMER_COMMAND_2 as lights but with different
 command values (payload_on/payload_off from the profile).
 """
 
+from __future__ import annotations
+
 from .light import build_dimmer_command
 
 

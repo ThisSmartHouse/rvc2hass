@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "RV-C CAN bus to Home Assistant via MQTT auto-discovery"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11"
+requires-python = ">=3.7"
 dependencies = [
     "python-can>=4.0",
     "paho-mqtt>=2.0",

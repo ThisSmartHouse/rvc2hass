@@ -5,6 +5,8 @@ one for retract. Sending "on" to the extend instance opens, sending "on"
 to the retract instance closes. Sending "off" to both stops movement.
 """
 
+from __future__ import annotations
+
 from .light import build_cover_command
 
 

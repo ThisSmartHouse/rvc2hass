@@ -17,6 +17,8 @@ Arbitration ID: priority=6, DGN=1FEDB, source=0x63 (99)
   Hex: 0x19FEDB63
 """
 
+from __future__ import annotations
+
 DC_DIMMER_COMMAND_2_ARB_ID = 0x19FEDB63
 SOURCE_ADDRESS = 0x63  # 99 decimal
 

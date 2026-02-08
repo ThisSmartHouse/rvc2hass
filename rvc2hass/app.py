@@ -7,6 +7,8 @@ This is the async main loop that:
 4. Subscribes to MQTT command topics and sends CAN frames on command
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import signal

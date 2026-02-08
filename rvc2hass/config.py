@@ -5,6 +5,8 @@ CAN bus and how to expose it to Home Assistant. Also handles CLI argument
 parsing.
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from dataclasses import dataclass, field

@@ -4,6 +4,8 @@ Maps decoded CAN frames to the appropriate entity based on DGN + instance,
 then publishes the state update to the correct MQTT topic.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from typing import Any
