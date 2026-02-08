@@ -143,7 +143,7 @@ class MQTTManager:
             "object_id": f"rvc_{slug}",
             "command_topic": f"{STATE_PREFIX}/light/{light.instance}/set",
             "state_topic": f"{STATE_PREFIX}/light/{light.instance}/state",
-            "schema": "default",
+
             "payload_on": "ON",
             "payload_off": "OFF",
             "device": device,
@@ -263,7 +263,7 @@ def generate_discovery_configs(profile: Profile) -> list[tuple[str, dict]]:
             "object_id": f"rvc_{slug}",
             "command_topic": f"{STATE_PREFIX}/light/{light.instance}/set",
             "state_topic": f"{STATE_PREFIX}/light/{light.instance}/state",
-            "schema": "default",
+
             "payload_on": "ON",
             "payload_off": "OFF",
             "device": device,

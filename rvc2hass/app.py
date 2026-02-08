@@ -101,8 +101,12 @@ def _setup_commands(profile, mqtt, can_reader):
             def handler(topic, payload):
                 if payload == "ON":
                     send_frames(build_on_command(lt.instance))
+                    mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/state", "ON")
                 elif payload == "OFF":
                     send_frames(build_off_command(lt.instance))
+                    mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/state", "OFF")
+                    if lt.dimmable:
+                        mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/brightness/state", "0")
             return handler
         mqtt.subscribe_command(
             f"{STATE_PREFIX}/light/{inst}/set",
@@ -116,6 +120,9 @@ def _setup_commands(profile, mqtt, can_reader):
                     try:
                         brightness = int(float(payload))
                         send_frames(build_brightness_command(lt.instance, brightness))
+                        mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/brightness/state", str(brightness))
+                        if brightness > 0:
+                            mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/state", "ON")
                     except (ValueError, TypeError):
                         log.warning("Invalid brightness value: %s", payload)
                 return handler
@@ -130,8 +137,10 @@ def _setup_commands(profile, mqtt, can_reader):
             def handler(topic, payload):
                 if payload == "ON":
                     send_frames(build_switch_on(sw.instance, sw.payload_on))
+                    mqtt.publish(f"{STATE_PREFIX}/switch/{sw.instance}/state", "ON")
                 elif payload == "OFF":
                     send_frames(build_switch_off(sw.instance, sw.payload_off))
+                    mqtt.publish(f"{STATE_PREFIX}/switch/{sw.instance}/state", "OFF")
             return handler
         mqtt.subscribe_command(
             f"{STATE_PREFIX}/switch/{switch.instance}/set",
