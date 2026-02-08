@@ -242,6 +242,68 @@ class TestEntityManagerStatePublish:
         states = {t: p for t, p in self.published}
         assert states[f"{STATE_PREFIX}/binary_sensor/awning_extend_locked_24/state"] == "ON"
 
+    def test_cover_opening(self):
+        """Extend instance active → opening."""
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 24,
+            "operating status (brightness)": 50.0,
+            "lock status": "00",
+        })
+        states = {t: p for t, p in self.published}
+        assert states[f"{STATE_PREFIX}/cover/awning/state"] == "opening"
+
+    def test_cover_closing(self):
+        """Retract instance active → closing."""
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 25,
+            "operating status (brightness)": 50.0,
+            "lock status": "00",
+        })
+        states = {t: p for t, p in self.published}
+        assert states[f"{STATE_PREFIX}/cover/awning/state"] == "closing"
+
+    def test_cover_stopped_no_bounce(self):
+        """Both instances inactive → stopped, and no bouncing between states."""
+        # Send extend instance (inactive)
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 24,
+            "operating status (brightness)": 0.0,
+            "lock status": "00",
+        })
+        # Send retract instance (inactive)
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 25,
+            "operating status (brightness)": 0.0,
+            "lock status": "00",
+        })
+        # Only cover state updates (filter out binary sensor updates)
+        cover_states = [p for t, p in self.published if t == f"{STATE_PREFIX}/cover/awning/state"]
+        # Should have published "stopped" only once (deduplication)
+        assert cover_states == ["stopped"]
+
+    def test_cover_no_republish_on_same_state(self):
+        """Repeated frames with same activity don't republish."""
+        for _ in range(5):
+            self.manager.process_decoded({
+                "name": "DC_DIMMER_STATUS_3",
+                "instance": 24,
+                "operating status (brightness)": 0.0,
+                "lock status": "00",
+            })
+            self.manager.process_decoded({
+                "name": "DC_DIMMER_STATUS_3",
+                "instance": 25,
+                "operating status (brightness)": 0.0,
+                "lock status": "00",
+            })
+        cover_states = [p for t, p in self.published if t == f"{STATE_PREFIX}/cover/awning/state"]
+        # Should publish "stopped" exactly once despite 10 frames
+        assert cover_states == ["stopped"]
+
     def test_tank_sensor(self):
         """TANK_STATUS publishes computed percentage."""
         self.manager.process_decoded({

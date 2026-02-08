@@ -40,6 +40,10 @@ class EntityManager:
         for cv in self.profile.covers:
             self._cover_instances[cv.extend_instance] = (cv, "extend")
             self._cover_instances[cv.retract_instance] = (cv, "retract")
+        # Cover state tracking — need both instances to determine state
+        # slug → {"extend_active": bool, "retract_active": bool, "last_state": str}
+        self._cover_state: dict[str, dict] = {}
+
         # Sensors by (dgn_name, instance) or (dgn_name, None)
         self._sensors: dict[tuple, list] = {}
         for sn in self.profile.sensors:
@@ -98,18 +102,37 @@ class EntityManager:
                 "ON" if is_on else "OFF",
             )
 
-        # Cover
+        # Cover — both extend and retract instances broadcast continuously,
+        # so we track both and derive state from the combination.
         if instance in self._cover_instances:
             cover, direction = self._cover_instances[instance]
-            # Covers don't have a simple state — we track extend/retract activity
-            # The cover state topic uses the cover's slug
             slug = slugify(cover.name)
             is_active = brightness is not None and brightness > 0
-            if is_active:
-                state = "opening" if direction == "extend" else "closing"
+
+            if slug not in self._cover_state:
+                self._cover_state[slug] = {
+                    "extend_active": False,
+                    "retract_active": False,
+                    "last_state": None,
+                }
+
+            cs = self._cover_state[slug]
+            if direction == "extend":
+                cs["extend_active"] = is_active
             else:
-                state = "open" if direction == "extend" else "closed"
-            self.publish(f"{STATE_PREFIX}/cover/{slug}/state", state)
+                cs["retract_active"] = is_active
+
+            if cs["extend_active"]:
+                state = "opening"
+            elif cs["retract_active"]:
+                state = "closing"
+            else:
+                state = "stopped"
+
+            # Only publish when state actually changes
+            if state != cs["last_state"]:
+                cs["last_state"] = state
+                self.publish(f"{STATE_PREFIX}/cover/{slug}/state", state)
 
     def _handle_sensor(self, sensor, decoded: dict):
         """Publish a sensor state update."""
