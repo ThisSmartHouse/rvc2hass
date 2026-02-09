@@ -67,6 +67,11 @@ class CANBusReader:
                 await loop.run_in_executor(
                     None, self._read_loop, callback
                 )
+                # _read_loop returned — either stopped or exited unexpectedly
+                if self._running:
+                    log.warning("CAN read loop exited unexpectedly — reconnecting in %ss", reconnect_delay)
+                    self.disconnect()
+                    await asyncio.sleep(reconnect_delay)
             except can.CanError as e:
                 log.error("CAN bus error: %s — reconnecting in %ss", e, reconnect_delay)
                 self.disconnect()
@@ -83,10 +88,32 @@ class CANBusReader:
         Reads frames continuously until stopped, calling the callback
         for each frame. This avoids per-frame executor overhead.
         """
+        import time
+        frames_since_log = 0
+        last_log_time = time.monotonic()
+
         while self._running:
-            msg = self._bus.recv(timeout=1.0)
+            try:
+                msg = self._bus.recv(timeout=1.0)
+            except Exception:
+                log.exception("CAN recv error")
+                raise  # Let read_frames handle reconnection
+
             if msg is not None:
-                callback(msg)
+                try:
+                    callback(msg)
+                except Exception:
+                    log.exception("Error processing CAN frame: %08X",
+                                  msg.arbitration_id)
+                frames_since_log += 1
+
+            # Log health every 5 minutes
+            now = time.monotonic()
+            if now - last_log_time >= 300:
+                log.info("CAN read loop alive: %d frames in last %ds",
+                         frames_since_log, int(now - last_log_time))
+                frames_since_log = 0
+                last_log_time = now
 
     def stop(self):
         """Signal the reader to stop."""
