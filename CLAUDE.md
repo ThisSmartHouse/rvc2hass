@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project Overview
 
 rvc2hass is a Python service that bridges RV-C CAN bus protocols to Home Assistant via MQTT auto-discovery. It runs on a Raspberry Pi with a CAN HAT, reads RV-C protocol frames, decodes them using a YAML spec, and publishes native HA entities. It also handles commands from HA (lights, switches, covers) by encoding and sending CAN frames back to the bus.
@@ -48,9 +50,30 @@ See README.md for the full architecture diagram and three-layer data model.
 
 ## Common Commands
 
+### Setup
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+```
+
 ### Run tests
 ```bash
-.venv/bin/pytest tests/ -v
+.venv/bin/pytest tests/ -v                    # all tests
+.venv/bin/pytest tests/test_decoder.py -v     # single module
+.venv/bin/pytest tests/test_decoder.py::test_parse_can_id -v  # single test
+.venv/bin/pytest --cov=rvc2hass -v            # with coverage
+```
+
+### Run service locally
+```bash
+.venv/bin/python -m rvc2hass --profile profiles/thor_hurricane_35m.yaml
+.venv/bin/python -m rvc2hass --profile profiles/thor_hurricane_35m.yaml --debug
+```
+
+### Discovery mode (scan CAN bus for active DGNs)
+```bash
+.venv/bin/python -m rvc2hass --profile profiles/thor_hurricane_35m.yaml --discover
+.venv/bin/python -m rvc2hass --profile profiles/thor_hurricane_35m.yaml --discover --discover-duration 120
 ```
 
 ### Deploy to CAN Pi
@@ -117,7 +140,7 @@ When commands from HA aren't working:
 Never add `Co-Authored-By` lines to commit messages.
 
 ### Python Compatibility
-All code must work on Python 3.7 (Raspbian Buster on the CAN Pi). Use `from __future__ import annotations` in every module for `X | Y` type union syntax.
+All code must work on Python 3.7 (Raspbian Buster on the CAN Pi). Use `from __future__ import annotations` in every module for `X | Y` type union syntax. The `pyproject.toml` license field must use `{text = "MIT"}` format (not bare string) for older setuptools.
 
 ### Entity Naming
 All HA entities are prefixed `rvc_`. The `slugify()` function in `mqtt_client.py` converts names (e.g., "Living Room" → `living_room`). Entity IDs become `light.rvc_living_room`, `switch.rvc_furnace`, etc.
@@ -151,30 +174,81 @@ This project uses paho-mqtt >= 2.0. The `Client()` constructor requires `callbac
 ### Sensor Template Evaluation Order
 In `entity_manager._handle_sensor()`, `value_template` must be checked BEFORE `field`. If both are set, the template should take precedence — it may use the field value as input (e.g., `voltage_to_soc` reads voltage from the `field` but applies a lookup table).
 
+### Deployment Gotchas
+- **Never rsync .venv to the remote Pi.** The local venv (Python 3.11, x86) is incompatible with the remote (Python 3.7, armv7l). Always `--exclude='.venv'` in rsync. Overwriting it causes systemd exit code 203/EXEC.
+- **Remote Pi pip bootstrapping:** Python 3.7's bundled pip (18.1) can't handle pyproject.toml. Before first install, run: `.venv/bin/pip install --upgrade pip setuptools wheel` then `.venv/bin/pip install -e .`
+
+## Key Entity Instance Mappings (Thor Hurricane 35M)
+
+Quick reference for debugging — which DC dimmer instance controls what:
+
+**Lights** (DC_DIMMER_STATUS_3 / DC_DIMMER_COMMAND_2):
+| Instance | Name | Dimmable |
+|----------|------|----------|
+| 15 | Vanity | no |
+| 17 | Living Room | yes |
+| 18 | Bedroom | yes |
+| 19 | Front Bathroom | yes |
+| 20 | Rear Bathroom | yes |
+| 26 | Cargo | no |
+| 27 | Stairwell | no |
+| 28 | Awning | no |
+
+**Switches:**
+| Instance | Name | Notes |
+|----------|------|-------|
+| 1 | Front A/C Compressor | |
+| 2,3 | Front A/C Fan High/Low | |
+| 5 | Rear A/C Compressor | |
+| 6,7 | Rear A/C Fan High/Low | |
+| 16 | Front Bathroom Fan | |
+| 29 | Furnace | |
+| 30,31 | Gas/Electric Water Heater | |
+| 32 | Rear Bathroom Fan | |
+| 34,35 | Start/Stop Generator | payload_on=1 (not 2) |
+
+**Covers** (paired extend/retract instances):
+| Cover | Extend | Retract |
+|-------|--------|---------|
+| Awning | 24 | 25 |
+| Front Slide | 10 | 11 |
+| Rear Slide | 12 | 13 |
+
+## RV-C Protocol Quick Reference
+
+CAN bus at 250 kbps, 29-bit extended arbitration IDs.
+
+**Arbitration ID layout:**
+```
+Bits 28-26: Priority (3 bits, typically 6)
+Bit  25:    Reserved (0)
+Bits 24-8:  DGN (17 bits)
+Bits  7-0:  Source Address (8 bits)
+
+Example: 0x19FEDA9F → Priority=6, DGN=1FEDA, Source=0x9F
+Command arbitration ID: 0x19FEDB00 (DGN=1FEDB, Source=0x00)
+```
+
+**Byte ordering:** Multi-byte values are little-endian (LSB first). The decoder swaps byte order when extracting.
+
+**Key DGNs:**
+| DGN | Name | Used for |
+|-----|------|----------|
+| 1FEDA | DC_DIMMER_STATUS_3 | Light/switch/cover status |
+| 1FEDB | DC_DIMMER_COMMAND_2 | Light/switch/cover commands |
+| 1FFFD | DC_SOURCE_STATUS_1 | Battery voltage/current |
+| 1FF9C | THERMOSTAT_AMBIENT_STATUS | Temperature sensors |
+| 1FFE2 | THERMOSTAT_STATUS_1 | Climate mode/fan status |
+| 1FFB7 | TANK_STATUS | Tank levels |
+| 1FFDC | GENERATOR_STATUS_1 | Generator status/runtime |
+
 ## Project Structure
 
-```
-rvc2hass/
-├── rvc2hass/
-│   ├── __main__.py         # CLI entry point, mode selection
-│   ├── app.py              # Main service loop, command wiring
-│   ├── can_bus.py          # python-can wrapper (threaded read, send)
-│   ├── config.py           # Profile YAML loading, dataclasses, CLI args
-│   ├── discovery.py        # Bus scan mode (--discover)
-│   ├── entity_manager.py   # Decoded frames → MQTT state routing
-│   ├── mqtt_client.py      # MQTT connection, discovery, commands
-│   ├── rvc_decoder.py      # RV-C protocol decoder (from spec YAML)
-│   └── entities/
-│       ├── light.py        # DC dimmer light CAN frame builders
-│       ├── switch.py       # DC dimmer switch CAN frame builders
-│       └── cover.py        # Cover extend/retract CAN frame builders
-├── specs/
-│   └── rvc_spec.yaml       # RV-C DGN definitions (201 DGNs)
-├── profiles/
-│   └── thor_hurricane_35m.yaml  # This RV's entity config
-├── systemd/
-│   └── rvc2hass.service    # systemd unit file
-├── tests/                  # pytest suite (169 tests)
-├── pyproject.toml
-└── README.md               # Full documentation
-```
+See README.md for the full file tree. Key code paths:
+- Entry point: `__main__.py` → `app.run_service()` or `discovery.run_discovery()`
+- CAN frame decoding: `rvc_decoder.decode_frame()` → uses `specs/rvc_spec.yaml`
+- State routing: `entity_manager.process_decoded()` → publishes to MQTT
+- Command handling: `app._setup_commands()` → subscribes MQTT, builds CAN frames via `entities/*.py`
+- MQTT discovery: `mqtt_client.publish_discovery()` → retained configs to `homeassistant/*/rvc_*/config`
+- Tests: `tests/` directory, 169 tests covering decoder, commands, MQTT, config, profile, discovery, spec
+
