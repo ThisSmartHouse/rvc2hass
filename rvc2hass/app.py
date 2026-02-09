@@ -51,7 +51,7 @@ def run_service(profile: Profile, args):
     mqtt.publish_discovery()
 
     # Set up command subscriptions
-    _setup_commands(profile, mqtt, can_reader)
+    _setup_commands(profile, mqtt, can_reader, entity_mgr)
 
     # Frame handler
     def on_frame(msg: can.Message):
@@ -86,13 +86,24 @@ def run_service(profile: Profile, args):
     asyncio.run(main_loop())
 
 
-def _setup_commands(profile, mqtt, can_reader):
+def _setup_commands(profile, mqtt, can_reader, entity_mgr):
     """Subscribe to MQTT command topics and wire up CAN frame sending."""
 
     def send_frames(frames: list[tuple[int, bytes]]):
         """Send a list of CAN frames with a small delay between them."""
         for arb_id, data in frames:
             can_reader.send(arb_id, data)
+
+    # Track pending brightness ramp timers per instance so we can cancel
+    # them when an OFF command arrives (or a new brightness command replaces
+    # the previous one).
+    _ramp_timers: dict[int, threading.Timer] = {}
+
+    def _cancel_ramp_timer(instance: int):
+        timer = _ramp_timers.pop(instance, None)
+        if timer is not None:
+            timer.cancel()
+        entity_mgr.unsuppress_light(instance)
 
     # Light commands
     for light in profile.lights:
@@ -104,6 +115,7 @@ def _setup_commands(profile, mqtt, can_reader):
                     send_frames(build_on_command(lt.instance))
                     mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/state", "ON")
                 elif payload == "OFF":
+                    _cancel_ramp_timer(lt.instance)
                     send_frames(build_off_command(lt.instance))
                     mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/state", "OFF")
                     if lt.dimmable:
@@ -120,6 +132,11 @@ def _setup_commands(profile, mqtt, can_reader):
                 def handler(topic, payload):
                     try:
                         brightness = int(float(payload))
+                        # Cancel any existing ramp timer for this instance
+                        _cancel_ramp_timer(lt.instance)
+                        # Suppress incoming CAN status during ramp so stale
+                        # brightness values don't override the optimistic state
+                        entity_mgr.suppress_light(lt.instance)
                         # Send ramp command, then after 5s send stop+lock
                         # (Firefly needs time to ramp to target brightness)
                         arb_id, data = build_brightness_ramp(lt.instance, brightness)
@@ -128,9 +145,13 @@ def _setup_commands(profile, mqtt, can_reader):
                         if brightness > 0:
                             mqtt.publish(f"{STATE_PREFIX}/light/{lt.instance}/state", "ON")
                         def send_stop():
+                            _ramp_timers.pop(lt.instance, None)
+                            entity_mgr.unsuppress_light(lt.instance)
                             for arb_id, data in build_brightness_stop(lt.instance):
                                 can_reader.send(arb_id, data)
-                        threading.Timer(5.0, send_stop).start()
+                        timer = threading.Timer(5.0, send_stop)
+                        _ramp_timers[lt.instance] = timer
+                        timer.start()
                     except Exception:
                         log.exception("Error handling brightness command: %s", payload)
                 return handler

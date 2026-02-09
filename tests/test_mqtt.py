@@ -1,10 +1,11 @@
 """Tests for MQTT auto-discovery and state publishing."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
-from rvc2hass.config import load_profile
+from rvc2hass.config import LightEntity, Profile, load_profile
 from rvc2hass.entity_manager import EntityManager
 from rvc2hass.mqtt_client import (
     AVAILABILITY_TOPIC,
@@ -318,3 +319,162 @@ class TestEntityManagerStatePublish:
         import json
         data = json.loads(states[topic])
         assert data["value"] == 75  # 180/240*100 = 75
+
+
+class TestLightSuppression:
+    """EntityManager suppresses light status during brightness ramps."""
+
+    def setup_method(self):
+        self.published = []
+        self.profile = Profile(
+            lights=[
+                LightEntity(instance=17, name="Living Room", dimmable=True),
+                LightEntity(instance=18, name="Bedroom", dimmable=True),
+            ],
+        )
+        self.manager = EntityManager(
+            self.profile,
+            lambda topic, payload, **kw: self.published.append((topic, payload)),
+        )
+
+    def _dimmer_status(self, instance, brightness):
+        return {
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": instance,
+            "operating status (brightness)": brightness,
+            "lock status": "00",
+        }
+
+    def test_suppressed_light_ignores_can_status(self):
+        """A suppressed instance should not publish state from CAN frames."""
+        self.manager.suppress_light(17)
+        self.manager.process_decoded(self._dimmer_status(17, 100.0))
+        light_states = [p for t, p in self.published if "/light/17/" in t]
+        assert light_states == []
+
+    def test_unsuppressed_light_publishes_normally(self):
+        """After unsuppressing, CAN status should publish again."""
+        self.manager.suppress_light(17)
+        self.manager.process_decoded(self._dimmer_status(17, 100.0))
+        self.manager.unsuppress_light(17)
+        self.manager.process_decoded(self._dimmer_status(17, 50.0))
+        light_states = [(t, p) for t, p in self.published if "/light/17/" in t]
+        assert len(light_states) == 2  # state ON + brightness 50
+        states = {t: p for t, p in light_states}
+        assert states[f"{STATE_PREFIX}/light/17/state"] == "ON"
+        assert states[f"{STATE_PREFIX}/light/17/brightness/state"] == "50"
+
+    def test_suppression_only_affects_target_instance(self):
+        """Suppressing instance 17 should not block instance 18."""
+        self.manager.suppress_light(17)
+        self.manager.process_decoded(self._dimmer_status(18, 75.0))
+        light_18 = [(t, p) for t, p in self.published if "/light/18/" in t]
+        assert len(light_18) == 2  # state + brightness
+
+    def test_unsuppress_without_suppress_is_safe(self):
+        """Calling unsuppress on a non-suppressed instance should not error."""
+        self.manager.unsuppress_light(17)  # no-op, should not raise
+
+
+class TestRampTimerCancellation:
+    """OFF and new brightness commands cancel pending ramp timers."""
+
+    def setup_method(self):
+        self.published = []
+        self.sent_frames = []
+        self.profile = Profile(
+            lights=[
+                LightEntity(instance=17, name="Living Room", dimmable=True),
+            ],
+        )
+        self.entity_mgr = EntityManager(
+            self.profile,
+            lambda topic, payload, **kw: self.published.append((topic, payload)),
+        )
+        self.mock_mqtt = MagicMock()
+        self.mock_mqtt.publish = MagicMock(
+            side_effect=lambda topic, payload, **kw: self.published.append((topic, payload))
+        )
+        self.mock_can = MagicMock()
+        self.mock_can.send = MagicMock(
+            side_effect=lambda arb_id, data: self.sent_frames.append((arb_id, data))
+        )
+
+    def _setup_and_get_handlers(self):
+        """Run _setup_commands and extract the registered handlers."""
+        from rvc2hass.app import _setup_commands
+        _setup_commands(self.profile, self.mock_mqtt, self.mock_can, self.entity_mgr)
+        # Collect handlers keyed by topic from subscribe_command calls
+        handlers = {}
+        for call in self.mock_mqtt.subscribe_command.call_args_list:
+            topic, handler = call[0]
+            handlers[topic] = handler
+        return handlers
+
+    def test_off_cancels_ramp_timer(self):
+        """Turning off during a ramp should cancel the stop+lock timer."""
+        import threading
+        handlers = self._setup_and_get_handlers()
+        brightness_handler = handlers[f"{STATE_PREFIX}/light/17/brightness/set"]
+        on_off_handler = handlers[f"{STATE_PREFIX}/light/17/set"]
+
+        # Start a brightness ramp
+        brightness_handler(f"{STATE_PREFIX}/light/17/brightness/set", "100")
+
+        # Instance should be suppressed now
+        assert 17 in self.entity_mgr._suppressed_lights
+
+        # Turn off immediately
+        on_off_handler(f"{STATE_PREFIX}/light/17/set", "OFF")
+
+        # Suppression should be lifted (timer cancelled)
+        assert 17 not in self.entity_mgr._suppressed_lights
+
+        # Wait long enough for the timer to have fired if it wasn't cancelled
+        import time
+        time.sleep(0.1)  # timers are 5s, so if not cancelled this won't trigger
+
+        # The off command should have sent its frame
+        off_frames = [f for f in self.sent_frames if f[1][3] == 3]  # command=3 is off
+        assert len(off_frames) == 1
+
+    def test_new_brightness_cancels_previous_timer(self):
+        """A second brightness command should cancel the first timer."""
+        handlers = self._setup_and_get_handlers()
+        brightness_handler = handlers[f"{STATE_PREFIX}/light/17/brightness/set"]
+
+        # Send two brightness commands quickly
+        brightness_handler(f"{STATE_PREFIX}/light/17/brightness/set", "100")
+        brightness_handler(f"{STATE_PREFIX}/light/17/brightness/set", "50")
+
+        # Instance should still be suppressed (second timer active)
+        assert 17 in self.entity_mgr._suppressed_lights
+
+        # Should have sent exactly 2 ramp commands (command=17)
+        ramp_frames = [f for f in self.sent_frames if f[1][3] == 17]
+        assert len(ramp_frames) == 2
+        # First ramp: brightness 100*2=200, second: 50*2=100
+        assert ramp_frames[0][1][2] == 200
+        assert ramp_frames[1][1][2] == 100
+
+    def test_suppression_active_during_ramp(self):
+        """CAN status should be suppressed while ramp timer is pending."""
+        handlers = self._setup_and_get_handlers()
+        brightness_handler = handlers[f"{STATE_PREFIX}/light/17/brightness/set"]
+
+        # Start a brightness ramp to 10%
+        brightness_handler(f"{STATE_PREFIX}/light/17/brightness/set", "10")
+        self.published.clear()
+
+        # Simulate a stale CAN frame arriving at old brightness
+        self.entity_mgr.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 17,
+            "operating status (brightness)": 100.0,
+            "lock status": "00",
+        })
+
+        # Should NOT have published the stale 100% brightness
+        brightness_pubs = [p for t, p in self.published
+                          if t == f"{STATE_PREFIX}/light/17/brightness/state"]
+        assert brightness_pubs == []

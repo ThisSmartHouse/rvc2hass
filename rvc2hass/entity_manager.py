@@ -27,6 +27,7 @@ class EntityManager:
         """
         self.profile = profile
         self.publish = publish_fn
+        self._suppressed_lights: set[int] = set()
         self._build_lookup()
 
     def _build_lookup(self):
@@ -55,6 +56,14 @@ class EntityManager:
             key = (bs.dgn, bs.instance)
             self._binary_sensors.setdefault(key, []).append(bs)
 
+    def suppress_light(self, instance: int):
+        """Suppress incoming CAN status updates for a light during a ramp."""
+        self._suppressed_lights.add(instance)
+
+    def unsuppress_light(self, instance: int):
+        """Resume processing incoming CAN status updates for a light."""
+        self._suppressed_lights.discard(instance)
+
     def process_decoded(self, decoded: dict[str, Any]):
         """Process a decoded RV-C message and publish state updates.
 
@@ -80,8 +89,8 @@ class EntityManager:
         brightness_raw = decoded.get("operating status (brightness)")
         brightness = brightness_raw if brightness_raw != "n/a" else 0
 
-        # Light
-        if instance in self._lights:
+        # Light (skip if suppressed during a brightness ramp)
+        if instance in self._lights and instance not in self._suppressed_lights:
             light = self._lights[instance]
             is_on = brightness is not None and brightness > 0
             self.publish(
