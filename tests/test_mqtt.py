@@ -478,3 +478,27 @@ class TestRampTimerCancellation:
         brightness_pubs = [p for t, p in self.published
                           if t == f"{STATE_PREFIX}/light/17/brightness/state"]
         assert brightness_pubs == []
+
+
+class TestOnMessageExceptionHandling:
+    """Verify _on_message catches callback exceptions to protect the paho thread."""
+
+    def test_callback_exception_does_not_propagate(self):
+        """An exception in a command callback must not propagate out of _on_message."""
+        from rvc2hass.mqtt_client import MQTTManager
+        from rvc2hass.config import load_profile
+
+        profile = load_profile(PROFILE_PATH)
+        mgr = MQTTManager(profile)
+
+        def exploding_callback(topic, payload):
+            raise OSError("No buffer space available")
+
+        mgr._command_callbacks["rvc2hass/light/17/set"] = exploding_callback
+
+        fake_msg = MagicMock()
+        fake_msg.topic = "rvc2hass/light/17/set"
+        fake_msg.payload = b"OFF"
+
+        # Must not raise — an unhandled exception here would kill the paho thread
+        mgr._on_message(None, None, fake_msg)

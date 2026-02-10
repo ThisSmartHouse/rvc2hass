@@ -92,7 +92,10 @@ class MQTTManager:
     def _on_message(self, client, userdata, msg):
         callback = self._command_callbacks.get(msg.topic)
         if callback:
-            callback(msg.topic, msg.payload.decode("utf-8"))
+            try:
+                callback(msg.topic, msg.payload.decode("utf-8"))
+            except Exception:
+                log.exception("Error in command callback for %s", msg.topic)
 
     def disconnect(self):
         """Disconnect from the MQTT broker."""
