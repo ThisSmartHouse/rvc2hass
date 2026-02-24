@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rvc2hass.config import LightEntity, Profile, load_profile
+from rvc2hass.config import CoverEntity, LightEntity, Profile, load_profile
 from rvc2hass.entity_manager import EntityManager
 from rvc2hass.mqtt_client import (
     AVAILABILITY_TOPIC,
@@ -265,26 +265,74 @@ class TestEntityManagerStatePublish:
         states = {t: p for t, p in self.published}
         assert states[f"{STATE_PREFIX}/cover/awning/state"] == "closing"
 
-    def test_cover_stopped_no_bounce(self):
-        """Both instances inactive → stopped, and no bouncing between states."""
-        # Send extend instance (inactive)
+    def test_cover_stopped_after_extend_shows_open(self):
+        """Extend then both inactive → open (not closed)."""
+        # First extend
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 24,
+            "operating status (brightness)": 50.0,
+            "lock status": "00",
+        })
+        self.published.clear()
+        # Now both inactive
         self.manager.process_decoded({
             "name": "DC_DIMMER_STATUS_3",
             "instance": 24,
             "operating status (brightness)": 0.0,
             "lock status": "00",
         })
-        # Send retract instance (inactive)
         self.manager.process_decoded({
             "name": "DC_DIMMER_STATUS_3",
             "instance": 25,
             "operating status (brightness)": 0.0,
             "lock status": "00",
         })
-        # Only cover state updates (filter out binary sensor updates)
         cover_states = [p for t, p in self.published if t == f"{STATE_PREFIX}/cover/awning/state"]
-        # Should have published "stopped" only once (deduplication)
-        assert cover_states == ["stopped"]
+        assert cover_states == ["open"]
+
+    def test_cover_stopped_after_retract_shows_closed(self):
+        """Retract then both inactive → closed."""
+        # First retract
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 25,
+            "operating status (brightness)": 50.0,
+            "lock status": "00",
+        })
+        self.published.clear()
+        # Now both inactive
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 24,
+            "operating status (brightness)": 0.0,
+            "lock status": "00",
+        })
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 25,
+            "operating status (brightness)": 0.0,
+            "lock status": "00",
+        })
+        cover_states = [p for t, p in self.published if t == f"{STATE_PREFIX}/cover/awning/state"]
+        assert cover_states == ["closed"]
+
+    def test_cover_no_prior_movement_shows_open(self):
+        """Both inactive with no prior movement → open (safe default)."""
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 24,
+            "operating status (brightness)": 0.0,
+            "lock status": "00",
+        })
+        self.manager.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 25,
+            "operating status (brightness)": 0.0,
+            "lock status": "00",
+        })
+        cover_states = [p for t, p in self.published if t == f"{STATE_PREFIX}/cover/awning/state"]
+        assert cover_states == ["open"]
 
     def test_cover_no_republish_on_same_state(self):
         """Repeated frames with same activity don't republish."""
@@ -302,8 +350,8 @@ class TestEntityManagerStatePublish:
                 "lock status": "00",
             })
         cover_states = [p for t, p in self.published if t == f"{STATE_PREFIX}/cover/awning/state"]
-        # Should publish "stopped" exactly once despite 10 frames
-        assert cover_states == ["stopped"]
+        # Should publish "open" exactly once despite 10 frames
+        assert cover_states == ["open"]
 
     def test_tank_sensor(self):
         """TANK_STATUS publishes computed percentage."""
@@ -502,3 +550,176 @@ class TestOnMessageExceptionHandling:
 
         # Must not raise — an unhandled exception here would kill the paho thread
         mgr._on_message(None, None, fake_msg)
+
+
+class TestCoverDeactivateDelay:
+    """Cover open/close inserts a delay between deactivation and activation."""
+
+    def setup_method(self):
+        self.published = []
+        self.sent_frames = []
+        self.profile = Profile(
+            covers=[
+                CoverEntity(name="Awning", extend_instance=24, retract_instance=25),
+            ],
+        )
+        self.entity_mgr = EntityManager(
+            self.profile,
+            lambda topic, payload, **kw: self.published.append((topic, payload)),
+        )
+        self.mock_mqtt = MagicMock()
+        self.mock_mqtt.publish = MagicMock(
+            side_effect=lambda topic, payload, **kw: self.published.append((topic, payload))
+        )
+        self.mock_can = MagicMock()
+        self.mock_can.send = MagicMock(
+            side_effect=lambda arb_id, data: self.sent_frames.append((arb_id, data))
+        )
+
+    def _setup_and_get_handlers(self):
+        from rvc2hass.app import _setup_commands
+        _setup_commands(self.profile, self.mock_mqtt, self.mock_can, self.entity_mgr)
+        handlers = {}
+        for call in self.mock_mqtt.subscribe_command.call_args_list:
+            topic, handler = call[0]
+            handlers[topic] = handler
+        return handlers
+
+    def test_open_sends_deactivate_immediately(self):
+        """OPEN should send off to both instances to clear stale interlock."""
+        handlers = self._setup_and_get_handlers()
+        handler = handlers[f"{STATE_PREFIX}/cover/awning/set"]
+
+        handler(f"{STATE_PREFIX}/cover/awning/set", "OPEN")
+
+        # Should immediately send 2 deactivation frames (off for both instances)
+        assert len(self.sent_frames) == 2
+        assert self.sent_frames[0][1][0] == 25  # retract off
+        assert self.sent_frames[0][1][3] == 3
+        assert self.sent_frames[1][1][0] == 24  # extend off
+        assert self.sent_frames[1][1][3] == 3
+
+    def test_open_suppresses_can_during_deactivation(self):
+        """CAN status is suppressed during the deactivation window."""
+        handlers = self._setup_and_get_handlers()
+        handler = handlers[f"{STATE_PREFIX}/cover/awning/set"]
+
+        handler(f"{STATE_PREFIX}/cover/awning/set", "OPEN")
+        assert "awning" in self.entity_mgr._suppressed_covers
+
+    def test_open_unsuppresses_when_timer_fires(self):
+        """CAN status is unsuppressed after the activation timer fires."""
+        import time
+        handlers = self._setup_and_get_handlers()
+        handler = handlers[f"{STATE_PREFIX}/cover/awning/set"]
+
+        handler(f"{STATE_PREFIX}/cover/awning/set", "OPEN")
+        assert "awning" in self.entity_mgr._suppressed_covers
+
+        time.sleep(0.4)
+        assert "awning" not in self.entity_mgr._suppressed_covers
+
+    def test_open_sends_activate_after_delay(self):
+        """OPEN should send the activate frame after the deactivation delay."""
+        import time
+        handlers = self._setup_and_get_handlers()
+        handler = handlers[f"{STATE_PREFIX}/cover/awning/set"]
+
+        handler(f"{STATE_PREFIX}/cover/awning/set", "OPEN")
+        assert len(self.sent_frames) == 2  # only deactivation so far
+
+        time.sleep(0.4)
+
+        assert len(self.sent_frames) == 3
+        _, data = self.sent_frames[2]
+        assert data[0] == 24      # extend instance
+        assert data[3] == 1       # command: on duration
+        assert data[2] == 200     # brightness 100*2
+
+    def test_close_sends_activate_after_delay(self):
+        """CLOSE should deactivate both then activate retract after delay."""
+        import time
+        handlers = self._setup_and_get_handlers()
+        handler = handlers[f"{STATE_PREFIX}/cover/awning/set"]
+
+        handler(f"{STATE_PREFIX}/cover/awning/set", "CLOSE")
+        assert len(self.sent_frames) == 2  # deactivation (off for both instances)
+
+        time.sleep(0.4)
+
+        assert len(self.sent_frames) == 3
+        _, data = self.sent_frames[2]
+        assert data[0] == 25      # retract instance
+        assert data[3] == 1       # command: on duration
+
+    def test_stop_sends_plain_off_immediately(self):
+        """STOP should send plain off to both instances, no stop(21)."""
+        handlers = self._setup_and_get_handlers()
+        handler = handlers[f"{STATE_PREFIX}/cover/awning/set"]
+
+        handler(f"{STATE_PREFIX}/cover/awning/set", "STOP")
+
+        # 2 frames: off for extend, off for retract
+        assert len(self.sent_frames) == 2
+        assert self.sent_frames[0][1][0] == 24  # extend
+        assert self.sent_frames[0][1][3] == 3   # off (not stop 21)
+        assert self.sent_frames[1][1][0] == 25  # retract
+        assert self.sent_frames[1][1][3] == 3   # off
+
+    def test_stop_cancels_pending_activate_timer(self):
+        """STOP after OPEN should cancel the pending activation timer."""
+        import time
+        handlers = self._setup_and_get_handlers()
+        handler = handlers[f"{STATE_PREFIX}/cover/awning/set"]
+
+        handler(f"{STATE_PREFIX}/cover/awning/set", "OPEN")
+        assert len(self.sent_frames) == 2  # deactivation from OPEN (both instances)
+
+        handler(f"{STATE_PREFIX}/cover/awning/set", "STOP")
+        assert len(self.sent_frames) == 4  # + off from STOP (both instances)
+
+        # Suppression should be lifted (timer cancelled)
+        assert "awning" not in self.entity_mgr._suppressed_covers
+
+        time.sleep(0.4)
+
+        # Should still be 4 — the activate from OPEN must not have fired
+        assert len(self.sent_frames) == 4
+
+    def test_close_cancels_pending_open_timer(self):
+        """CLOSE after OPEN should cancel the OPEN activation timer."""
+        import time
+        handlers = self._setup_and_get_handlers()
+        handler = handlers[f"{STATE_PREFIX}/cover/awning/set"]
+
+        handler(f"{STATE_PREFIX}/cover/awning/set", "OPEN")
+        handler(f"{STATE_PREFIX}/cover/awning/set", "CLOSE")
+
+        # Wait for the CLOSE timer to fire
+        time.sleep(0.4)
+
+        # Last activation frame should be retract (from CLOSE), not extend (from OPEN)
+        activate_frames = [f for f in self.sent_frames if f[1][3] == 1]
+        assert len(activate_frames) == 1
+        assert activate_frames[0][1][0] == 25  # retract instance
+
+    def test_suppressed_cover_ignores_can_status(self):
+        """CAN frames for a suppressed cover should not update state."""
+        handlers = self._setup_and_get_handlers()
+        handler = handlers[f"{STATE_PREFIX}/cover/awning/set"]
+
+        # Trigger OPEN to suppress
+        handler(f"{STATE_PREFIX}/cover/awning/set", "OPEN")
+        self.published.clear()
+
+        # Simulate CAN noise from deactivation — retract briefly active
+        self.entity_mgr.process_decoded({
+            "name": "DC_DIMMER_STATUS_3",
+            "instance": 25,
+            "operating status (brightness)": 50.0,
+            "lock status": "00",
+        })
+
+        # Should NOT have published any cover state (suppressed)
+        cover_pubs = [p for t, p in self.published if "cover/awning/state" in t]
+        assert cover_pubs == []

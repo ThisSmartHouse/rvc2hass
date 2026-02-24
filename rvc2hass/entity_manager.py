@@ -28,6 +28,7 @@ class EntityManager:
         self.profile = profile
         self.publish = publish_fn
         self._suppressed_lights: set[int] = set()
+        self._suppressed_covers: set[str] = set()
         self._build_lookup()
 
     def _build_lookup(self):
@@ -63,6 +64,14 @@ class EntityManager:
     def unsuppress_light(self, instance: int):
         """Resume processing incoming CAN status updates for a light."""
         self._suppressed_lights.discard(instance)
+
+    def suppress_cover(self, slug: str):
+        """Suppress incoming CAN status for a cover during a command."""
+        self._suppressed_covers.add(slug)
+
+    def unsuppress_cover(self, slug: str):
+        """Resume processing incoming CAN status for a cover."""
+        self._suppressed_covers.discard(slug)
 
     def process_decoded(self, decoded: dict[str, Any]):
         """Process a decoded RV-C message and publish state updates.
@@ -113,7 +122,10 @@ class EntityManager:
 
         # Cover — both extend and retract instances broadcast continuously,
         # so we track both and derive state from the combination.
-        if instance in self._cover_instances:
+        # Skip if suppressed during a command (prevents CAN noise from
+        # stop+off deactivation from overriding optimistic state).
+        if instance in self._cover_instances and \
+                slugify(self._cover_instances[instance][0].name) not in self._suppressed_covers:
             cover, direction = self._cover_instances[instance]
             slug = slugify(cover.name)
             is_active = brightness is not None and brightness > 0
@@ -123,6 +135,7 @@ class EntityManager:
                     "extend_active": False,
                     "retract_active": False,
                     "last_state": None,
+                    "last_direction": None,
                 }
 
             cs = self._cover_state[slug]
@@ -133,10 +146,17 @@ class EntityManager:
 
             if cs["extend_active"]:
                 state = "opening"
+                cs["last_direction"] = "extend"
             elif cs["retract_active"]:
                 state = "closing"
+                cs["last_direction"] = "retract"
+            elif cs["last_direction"] == "retract":
+                # Was retracting and stopped — assume fully closed
+                state = "closed"
             else:
-                state = "stopped"
+                # Was extending and stopped, or no prior movement —
+                # report "open" so HA keeps both buttons enabled
+                state = "open"
 
             # Only publish when state actually changes
             if state != cs["last_state"]:

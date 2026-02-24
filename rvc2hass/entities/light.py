@@ -92,21 +92,30 @@ def build_brightness_stop(instance: int) -> list[tuple[int, bytes]]:
     ]
 
 
-def build_cover_command(instance: int, activate: bool = True) -> list[tuple[int, bytes]]:
-    """Build CAN frame(s) for cover extend/retract.
-
-    Covers use a special invocation: dc_dimmer.pl <instance> 1 100 1
-    which means: command=1 (on duration), brightness=100, bypass=1.
-    The bypass flag skips the sleep+stop sequence.
+def build_cover_activate(instance: int) -> list[tuple[int, bytes]]:
+    """Build CAN frame to activate a cover direction (extend or retract).
 
     Args:
         instance: Dimmer instance for extend or retract.
-        activate: True to activate, False to deactivate (stop).
 
     Returns:
         List of (arbitration_id, data_bytes) tuples.
     """
-    if activate:
-        return [build_dimmer_command(instance, 1, brightness=100)]
-    else:
-        return [build_dimmer_command(instance, 3, brightness=0)]
+    return [build_dimmer_command(instance, 1, brightness=100)]
+
+
+def build_cover_deactivate(instance: int) -> list[tuple[int, bytes]]:
+    """Build CAN frames to deactivate a cover direction.
+
+    Uses off (cmd 3) to deactivate.  NOTE: stop (cmd 21) must NOT be used
+    for covers — it causes Firefly to briefly re-activate the motor at
+    near-100% brightness, which triggers the hardware interlock when both
+    directions get pulsed simultaneously.
+
+    Args:
+        instance: Dimmer instance for extend or retract.
+
+    Returns:
+        List of (arbitration_id, data_bytes) tuples.
+    """
+    return [build_dimmer_command(instance, 3, brightness=0)]

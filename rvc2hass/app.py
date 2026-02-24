@@ -22,7 +22,13 @@ from .config import Profile
 from .entity_manager import EntityManager
 from .entities.light import build_brightness_ramp, build_brightness_stop, build_off_command, build_on_command
 from .entities.switch import build_switch_on, build_switch_off
-from .entities.cover import build_cover_open, build_cover_close, build_cover_stop
+from .entities.cover import (
+    build_cover_close_activate,
+    build_cover_close_deactivate,
+    build_cover_open_activate,
+    build_cover_open_deactivate,
+    build_cover_stop,
+)
 from .mqtt_client import STATE_PREFIX, MQTTManager, slugify
 from .rvc_decoder import RvcSpec, decode_frame
 
@@ -177,19 +183,54 @@ def _setup_commands(profile, mqtt, can_reader, entity_mgr):
         )
 
     # Cover commands
+    # After Firefly auto-stops a motor (e.g. awning fully retracted), the
+    # instance may remain in an engaged/locked state.  If we send
+    # deactivate + activate back-to-back, Firefly doesn't process the
+    # deactivate in time and the interlock blocks the activate.  Inserting
+    # a short delay (250ms) between deactivation and activation gives
+    # Firefly time to clear the interlock.
+    COVER_DEACTIVATE_DELAY = 0.25  # seconds
+    _cover_timers = {}  # type: dict[str, threading.Timer]
+
+    def _cancel_cover_timer(slug: str):
+        timer = _cover_timers.pop(slug, None)
+        if timer is not None:
+            timer.cancel()
+        entity_mgr.unsuppress_cover(slug)
+
     for cover in profile.covers:
         slug = slugify(cover.name)
 
-        def make_cover_handler(cv):
+        def make_cover_handler(cv, cv_slug):
             def handler(topic, payload):
+                _cancel_cover_timer(cv_slug)
                 if payload == "OPEN":
-                    send_frames(build_cover_open(cv.extend_instance))
+                    entity_mgr.suppress_cover(cv_slug)
+                    send_frames(build_cover_open_deactivate(cv.extend_instance, cv.retract_instance))
+                    mqtt.publish(f"{STATE_PREFIX}/cover/{cv_slug}/state", "opening")
+                    def activate_open():
+                        _cover_timers.pop(cv_slug, None)
+                        entity_mgr.unsuppress_cover(cv_slug)
+                        send_frames(build_cover_open_activate(cv.extend_instance))
+                    timer = threading.Timer(COVER_DEACTIVATE_DELAY, activate_open)
+                    _cover_timers[cv_slug] = timer
+                    timer.start()
                 elif payload == "CLOSE":
-                    send_frames(build_cover_close(cv.retract_instance))
+                    entity_mgr.suppress_cover(cv_slug)
+                    send_frames(build_cover_close_deactivate(cv.extend_instance, cv.retract_instance))
+                    mqtt.publish(f"{STATE_PREFIX}/cover/{cv_slug}/state", "closing")
+                    def activate_close():
+                        _cover_timers.pop(cv_slug, None)
+                        entity_mgr.unsuppress_cover(cv_slug)
+                        send_frames(build_cover_close_activate(cv.retract_instance))
+                    timer = threading.Timer(COVER_DEACTIVATE_DELAY, activate_close)
+                    _cover_timers[cv_slug] = timer
+                    timer.start()
                 elif payload == "STOP":
                     send_frames(build_cover_stop(cv.extend_instance, cv.retract_instance))
+                    mqtt.publish(f"{STATE_PREFIX}/cover/{cv_slug}/state", "open")
             return handler
         mqtt.subscribe_command(
             f"{STATE_PREFIX}/cover/{slug}/set",
-            make_cover_handler(cover),
+            make_cover_handler(cover, slug),
         )

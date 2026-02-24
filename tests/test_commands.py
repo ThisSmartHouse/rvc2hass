@@ -10,13 +10,20 @@ from rvc2hass.entities.light import (
     DC_DIMMER_COMMAND_2_ARB_ID,
     build_brightness_ramp,
     build_brightness_stop,
+    build_cover_activate,
+    build_cover_deactivate,
     build_dimmer_command,
     build_off_command,
     build_on_command,
-    build_cover_command,
 )
 from rvc2hass.entities.switch import build_switch_on, build_switch_off
-from rvc2hass.entities.cover import build_cover_open, build_cover_close, build_cover_stop
+from rvc2hass.entities.cover import (
+    build_cover_close_activate,
+    build_cover_close_deactivate,
+    build_cover_open_activate,
+    build_cover_open_deactivate,
+    build_cover_stop,
+)
 
 
 class TestDimmerCommand:
@@ -123,34 +130,71 @@ class TestDimmerBrightness:
         assert data[3] == 4        # command: stop (lock)
 
 
-class TestCoverOpenClose:
-    """Cover commands using extend/retract instances."""
+class TestCoverActivateDeactivate:
+    """Low-level cover activate/deactivate frame building."""
 
-    def test_cover_open(self):
-        frames = build_cover_open(24)  # awning extend
+    def test_activate_single_frame(self):
+        frames = build_cover_activate(24)
         assert len(frames) == 1
         _, data = frames[0]
-        assert data[0] == 24       # extend instance
+        assert data[0] == 24       # instance
         assert data[2] == 200      # brightness 100*2
         assert data[3] == 1        # command: on duration
 
-    def test_cover_close(self):
-        frames = build_cover_close(25)  # awning retract
+    def test_deactivate_sends_off(self):
+        frames = build_cover_deactivate(25)
         assert len(frames) == 1
         _, data = frames[0]
-        assert data[0] == 25       # retract instance
-        assert data[3] == 1        # command: on duration
+        assert data[0] == 25
+        assert data[3] == 3    # command: off
+        assert data[2] == 0    # brightness 0
+
+
+class TestCoverOpenClose:
+    """Cover commands using extend/retract instances."""
+
+    def test_open_deactivate(self):
+        frames = build_cover_open_deactivate(24, 25)
+        # Off to both instances to clear any stale interlock
+        assert len(frames) == 2
+        assert frames[0][1][0] == 25  # retract instance
+        assert frames[0][1][3] == 3   # off
+        assert frames[1][1][0] == 24  # extend instance
+        assert frames[1][1][3] == 3   # off
+
+    def test_open_activate(self):
+        frames = build_cover_open_activate(24)
+        assert len(frames) == 1
+        _, data = frames[0]
+        assert data[0] == 24      # extend instance
+        assert data[2] == 200     # brightness 100*2
+        assert data[3] == 1       # command: on duration
+
+    def test_close_deactivate(self):
+        frames = build_cover_close_deactivate(24, 25)
+        # Off to both instances to clear any stale interlock
+        assert len(frames) == 2
+        assert frames[0][1][0] == 24  # extend instance
+        assert frames[0][1][3] == 3   # off
+        assert frames[1][1][0] == 25  # retract instance
+        assert frames[1][1][3] == 3   # off
+
+    def test_close_activate(self):
+        frames = build_cover_close_activate(25)
+        assert len(frames) == 1
+        _, data = frames[0]
+        assert data[0] == 25      # retract instance
+        assert data[2] == 200     # brightness 100*2
+        assert data[3] == 1       # command: on duration
 
     def test_cover_stop(self):
-        frames = build_cover_stop(24, 25)  # awning
+        frames = build_cover_stop(24, 25)
+        # Plain off to both — no stop(21) to avoid re-activating inactive instance
         assert len(frames) == 2
-        # Both extend and retract get deactivated
-        _, data1 = frames[0]
-        _, data2 = frames[1]
-        assert data1[0] == 24      # extend instance
-        assert data1[3] == 3       # command: off
-        assert data2[0] == 25      # retract instance
-        assert data2[3] == 3       # command: off
+        assert frames[0][1][0] == 24  # extend
+        assert frames[0][1][3] == 3   # off
+        assert frames[1][1][0] == 25  # retract
+        assert frames[1][1][3] == 3   # off
 
 
 class TestSwitchCommands:
