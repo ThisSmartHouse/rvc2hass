@@ -1,0 +1,13 @@
+[Unit]
+Description=Bring up can0 (MCP2515) for RV-C bus
+BindsTo=sys-subsystem-net-devices-can0.device
+After=sys-subsystem-net-devices-can0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/ip link set can0 up type can bitrate 250000
+ExecStop=/sbin/ip link set can0 down
+
+[Install]
+WantedBy=multi-user.target

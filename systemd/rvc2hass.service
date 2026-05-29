@@ -1,7 +1,8 @@
 [Unit]
 Description=RV-C CAN Bus to Home Assistant via MQTT
-After=network.target
+After=network.target can0-up.service
 Wants=network.target
+Requires=can0-up.service
 
 [Service]
 Type=simple

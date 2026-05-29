@@ -309,19 +309,29 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-### systemd service
+### systemd services
+
+Two units are installed together. `can0-up.service` brings the `can0`
+interface up at 250 kbps; `rvc2hass.service` depends on it via
+`Requires=` / `After=`, so the bus is always up before the decoder starts.
 
 ```bash
-sudo cp systemd/rvc2hass.service /etc/systemd/system/
+sudo cp systemd/can0-up.service systemd/rvc2hass.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now rvc2hass
+sudo systemctl enable --now can0-up.service rvc2hass.service
 
 # Check status
 sudo systemctl status rvc2hass
 sudo journalctl -u rvc2hass -f
 ```
 
-The service auto-restarts on crash with a 5-second delay.
+The service auto-restarts on crash with a 5-second delay. If `can0`
+disappears (driver unload, hardware fault), `BindsTo=` on
+`can0-up.service` causes it to stop, which in turn stops `rvc2hass`.
+
+The MCP2515 driver itself is enabled separately via `/boot/config.txt`,
+e.g. `dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25` — match
+the oscillator and interrupt pin to your CAN HAT.
 
 ### Updating
 
@@ -390,7 +400,8 @@ rvc2hass/
 ├── profiles/
 │   └── thor_hurricane_35m.yaml  # Example: Thor Hurricane 35M
 ├── systemd/
-│   └── rvc2hass.service    # systemd unit file
+│   ├── can0-up.service     # brings can0 up at 250 kbps before rvc2hass
+│   └── rvc2hass.service    # main decoder service
 ├── tests/                  # pytest test suite (165 tests)
 ├── pyproject.toml
 └── README.md
